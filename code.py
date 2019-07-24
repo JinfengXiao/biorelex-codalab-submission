@@ -1,9 +1,14 @@
+# -*- coding: utf-8 -*-
+
+from __future__ import print_function
+
+import io
 import os
 import json
 import argparse
 
 
-def collect_data(*paths: str):
+def collect_data(*paths):
     """
     Collect set of relations occurring in given samples.
     :param paths: Paths of json files containing samples.
@@ -12,7 +17,7 @@ def collect_data(*paths: str):
     # First, we read json samples to learn relations from
     samples = []
     for path in paths:
-        with open(path, 'r', encoding='utf-8') as f:
+        with io.open(path, 'r', encoding='utf-8') as f:
             samples += json.load(f)
 
     # Collect all the occurring relations
@@ -27,6 +32,73 @@ def collect_data(*paths: str):
                     relations.add((b, a))
 
     return relations
+
+
+def predict(sample, relations):
+    """
+    Predict entities and interactions of given sample
+    w.r.t set of known relations.
+    :param sample: Dict with `id` and `text` as strings
+    :param relations: Set of relation tuples
+    :return: Sample augmented with extracted entities and interactions.
+    """
+    text = sample['text']
+
+    interactions = []
+    sample['interactions'] = interactions
+
+    entities = []
+    sample['entities'] = entities
+    entity_registry = dict()
+
+    def find_mentions(entity):
+        start = -1
+        while True:
+            start = text.find(entity, start + 1)
+            if start < 0:
+                break
+            end = start + len(entity)
+            yield start, end
+
+    def register_entity(entity):
+        if entity in entity_registry:
+            return entity_registry[entity]
+
+        idx = len(entities)
+        mentions = list(find_mentions(entity))
+        entities.append({
+            'is_state': False,
+            'label': 'protein',
+            'names': {
+                entity: {
+                    'is_mentioned': True,
+                    'mentions': mentions
+                }
+            },
+            'is_mentioned': True,
+            'is_mutant': False
+        })
+        entity_registry[entity] = idx
+        return idx
+
+    for a, b in relations:
+        if a not in text or b not in text:
+            continue
+        # As the database is symmetric, omit duplicates
+        if a >= b:
+            continue
+
+        # Ensure we have entity registered
+        a_idx = register_entity(a)
+        b_idx = register_entity(b)
+
+        interactions.append({
+            'participants': [a_idx, b_idx],
+            'type': 'bind',
+            'label': 1
+        })
+
+    return sample
 
 
 def main():
@@ -52,68 +124,16 @@ def main():
     input_json_path = os.path.join(args.input_dir, 'input.json')
     output_json_path = os.path.join(args.output_dir, 'predictions.json')
 
-    with open(input_json_path, 'r', encoding='utf-8') as f:
+    with io.open(input_json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
+    predictions = []
     for sample in data:
-        text = sample['text']
+        sample = predict(sample, relations)
+        predictions.append(sample)
 
-        interactions = []
-        sample['interactions'] = interactions
-
-        entities = []
-        sample['entities'] = entities
-        entity_registry = dict()
-
-        def find_mentions(entity):
-            start = -1
-            while True:
-                start = text.find(entity, start + 1)
-                if start < 0:
-                    break
-                end = start + len(entity)
-                yield start, end
-
-        def register_entity(entity):
-            if entity in entity_registry:
-                return entity_registry[entity]
-
-            idx = len(entities)
-            mentions = list(find_mentions(entity))
-            entities.append({
-                'is_state': False,
-                'label': 'protein',
-                'names': {
-                    entity: {
-                        'is_mentioned': True,
-                        'mentions': mentions
-                    }
-                },
-                'is_mentioned': True,
-                'is_mutant': False
-            })
-            entity_registry[entity] = idx
-            return idx
-
-        for a, b in relations:
-            if a not in text or b not in text:
-                continue
-            # As the database is symmetric, omit duplicates
-            if a >= b:
-                continue
-
-            # Ensure we have entity registered
-            a_idx = register_entity(a)
-            b_idx = register_entity(b)
-
-            interactions.append({
-                'participants': [a_idx, b_idx],
-                'type': 'bind',
-                'label': 1
-            })
-
-    with open(output_json_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=True)
+    with open(output_json_path, 'w') as f:
+        json.dump(predictions, f, indent=True)
 
 
 if __name__ == "__main__":
